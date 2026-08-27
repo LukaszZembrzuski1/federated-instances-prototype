@@ -1,0 +1,37 @@
+name: List CDN assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to list assets from'
+        required: true
+        default: 'regression'
+        type: choice
+        options:
+          - regression
+          - production
+          - gov-reg
+          - gov-prod
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  list-loader-cdn-assets:
+    name: List Loader CDN files
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'regression' }} #Environment you wish to list assets from
+    steps:
+      - name: List Loader CDN files
+        #it is strongly encouraged to use the reference to the tagged release, main branch is the development working one, so may contain breaking changes
+        uses: relativityone/rel-cdn-actions/actions/list-all-assets@v2.1.0
+        with:
+          environment: ${{ inputs.environment || 'regression' }}
+          client-id: ${{ 
+            (inputs.environment == 'production' && secrets.CDN_PRODUCTION_CLIENT_ID) ||
+            (inputs.environment == 'gov-reg' && secrets.CDN_GOVREG_CLIENT_ID) ||
+            (inputs.environment == 'gov-prod' && secrets.CDN_GOVPROD_CLIENT_ID) ||
+            secrets.CDN_REGRESSION_CLIENT_ID }} 
+          container: mfe-applet-template

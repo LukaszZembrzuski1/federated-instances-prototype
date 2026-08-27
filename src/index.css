@@ -1,0 +1,34 @@
+/* CDN URL is temporarily hardcoded to regression CDN */
+@import url('https://cdn.r1.kcura.com/relativity-theme/theme.css');
+@import './fonts/relativity-icons.css';
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+body {
+	margin: 0;
+	font-family: var(--font-family, 'Roboto', Arial, Helvetica, sans-serif);
+	font-size: var(--size-font-base, 14px);
+	color: var(--color-text-primary);
+	background: var(--color-background-primary);
+}
+
+
+/* Bulk-actions dropdown: comfortable menu rows matching product list pages.
+   Specificity beats the rui-menu module's own 4/8 padding. */
+.p-menu.actions-menu {
+	padding: var(--size-xs) 0;
+}
+.p-menu.actions-menu .p-menuitem .p-menuitem-content .p-menuitem-link {
+	padding: var(--size-s) var(--size-l);
+	line-height: 20px;
+}

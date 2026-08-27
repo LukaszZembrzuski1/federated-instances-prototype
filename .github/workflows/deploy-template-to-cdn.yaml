@@ -1,0 +1,233 @@
+name: Deploy Applet Template to CDN
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: 'Environment to deploy to'
+                required: true
+                default: 'regression'
+                type: choice
+                options:
+                    - regression
+                    - production
+                    - gov-reg
+                    - gov-prod
+            overwrite-files:
+                description: 'Overwrite existing files in CDN'
+                required: false
+                default: 'true'
+            purge-cache:
+                description: 'Purge CDN cache after deployment'
+                required: false
+                default: 'true'
+            version:
+                description: 'Version number to deploy'
+                required: true
+                default: '0.0.0'
+            region:
+                description: 'Region to deploy to'
+                required: false
+                default: 'esus'
+
+permissions:
+    id-token: write
+    contents: read
+
+jobs:
+    get-version-number:
+        runs-on: ubuntu-latest
+        outputs:
+            result: ${{ steps.get_version_number.outputs.result }}
+        steps:
+            - name: Check out source code
+              uses: actions/checkout@v6
+            - name: Get new version number
+              id: get_version_number
+              shell: bash
+              run: |
+                  # Use input version if provided and not the default placeholder, otherwise fall back to version.txt
+                  if [ -n "${{ inputs.version }}" ] && [ "${{ inputs.version }}" != "0.0.0" ]; then
+                    versionNumber="${{ inputs.version }}"
+                  else
+                    versionNumber=$(cat version.txt)
+                    versionNumber="${versionNumber//$'\r'/}"
+                  fi
+                  echo "result=$versionNumber" >> $GITHUB_OUTPUT
+
+    prepare-package:
+        runs-on: ubuntu-latest
+        environment: dev
+        needs: [get-version-number]
+        outputs:
+            extracted-folder: ${{ steps.extract.outputs.extracted-folder }}
+            entry-point: ${{ steps.find_remote_entry.outputs.entry_point }}
+        steps:
+            - name: Check out source code
+              uses: actions/checkout@v6
+            - name: Login in to azure
+              uses: azure/login@v3
+              with:
+                  client-id: ${{ secrets.AZURE_CLIENT_ID }}
+                  tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+                  subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+            - name: Get required secrets from KeyVault
+              id: kvSecrets
+              uses: relativityone/get-keyvault-secrets-action@v3
+              with:
+                  key-vault: 'fds-mfe-template-dev-kv'
+                  secrets: 'ArtifactoryAccessToken'
+            - name: Register Artifactory
+              uses: relativityone/artifactory-setup-action@v2
+              with:
+                  KeyVaultName: 'fds-mfe-template-dev-kv'
+                  ArtifactTypes: 'npm'
+                  MetricsCredentials: ${{ secrets.DEVOPS_METRICS_SERVICE_PRINCIPAL_CREDS }}
+            - name: Setup JFrog CLI
+              uses: jfrog/setup-jfrog-cli@v4
+              with:
+                  version: latest
+            - name: Configure JFrog CLI
+              run: |
+                  jf config add --artifactory-url="https://relativityone.jfrog.io/artifactory" --access-token="${{ steps.kvSecrets.outputs.ArtifactoryAccessToken }}" --interactive=false
+            - name: Download package from Artifactory
+              id: download
+              run: |
+                  # Create a temporary directory for the download
+                  mkdir -p ./temp-download
+
+                  # Debug: Show what we're trying to download
+                  echo "Attempting to download: mfe-applet-template-npm-local/mfe-applet-template/-/mfe-applet-template-${{ needs.get-version-number.outputs.result }}.tgz"
+                  echo "Target directory: ./temp-download"
+
+                  # Download the package from Artifactory
+                  echo "Starting download..."
+                  jf rt download "mfe-applet-template-npm-local/mfe-applet-template/-/mfe-applet-template-${{ needs.get-version-number.outputs.result }}.tgz" ./temp-download/ --flat=true
+
+                  # Debug: Show what was downloaded
+                  echo "Download completed. Contents of temp-download:"
+                  ls -la ./temp-download/
+
+                  # Find the downloaded file
+                  downloaded_file=$(find ./temp-download -name "*.tgz" | head -1)
+                  if [ -z "$downloaded_file" ]; then
+                    echo "ERROR: No package found in Artifactory"
+                    echo "Contents of temp-download directory:"
+                    ls -la ./temp-download/
+                    echo "Looking for any files:"
+                    find ./temp-download -type f
+                    exit 1
+                  fi
+
+                  echo "Successfully downloaded: $downloaded_file"
+                  echo "downloaded-file=$downloaded_file" >> $GITHUB_OUTPUT
+            - name: Extract package files
+              id: extract
+              run: |
+                  # Create extraction directory
+                  mkdir -p ./extracted-applet-template
+
+                  # Debug: Show what file we're trying to extract
+                  echo "Attempting to extract file: ${{ steps.download.outputs.downloaded-file }}"
+
+                  # Debug: Check if the file exists and show its details
+                  if [ -f "${{ steps.download.outputs.downloaded-file }}" ]; then
+                    echo "File exists. Details:"
+                    ls -la "${{ steps.download.outputs.downloaded-file }}"
+                    echo "File size: $(stat -c%s "${{ steps.download.outputs.downloaded-file }}") bytes"
+                  else
+                    echo "ERROR: File does not exist!"
+                    echo "Contents of temp-download directory:"
+                    ls -la ./temp-download/ || echo "temp-download directory does not exist"
+                    echo "Looking for any .tgz files:"
+                    find . -name "*.tgz" -type f
+                    exit 1
+                  fi
+
+                  # Extract the downloaded package
+                  echo "Extracting package..."
+                  tar -xzf "${{ steps.download.outputs.downloaded-file }}" -C ./extracted-applet-template
+
+                  # Debug: Show what was extracted
+                  echo "Extraction completed."
+
+                  # Find the package directory inside the extracted content
+                  package_dir=$(find ./extracted-applet-template -name "package" -type d | head -1)
+                  if [ -z "$package_dir" ]; then
+                    # If no package directory, use the extracted content directly
+                    package_dir="./extracted-applet-template"
+                    echo "No 'package' directory found, using extracted content directly: $package_dir"
+                  else
+                    echo "Found package directory: $package_dir"
+                  fi
+
+                  echo "extracted-folder=$package_dir" >> $GITHUB_OUTPUT
+            - name: Find hashed remoteEntry.js from Artifactory package
+              id: find_remote_entry
+              shell: bash
+              run: |
+                  # Find the hashed remoteEntry.js file in the assets directory
+                  hashed_remote_entry=$(find ${{ steps.extract.outputs.extracted-folder }} -path "*/assets/remoteEntry-*.js" | head -1)
+                  if [ -z "$hashed_remote_entry" ]; then
+                    # Fallback to non-hashed remoteEntry.js
+                    fallback_remote_entry=$(find ${{ steps.extract.outputs.extracted-folder }} -path "*/assets/remoteEntry.js" | head -1)
+                    if [ -z "$fallback_remote_entry" ]; then
+                      echo "entry_point=remoteEntry.js" >> $GITHUB_OUTPUT
+                      echo "No remoteEntry.js file found in assets directory, using default"
+                    else
+                      entry_point=$(basename "$fallback_remote_entry")
+                      echo "entry_point=$entry_point" >> $GITHUB_OUTPUT
+                      echo "Found non-hashed remoteEntry.js: $fallback_remote_entry"
+                    fi
+                  else
+                    entry_point=$(basename "$hashed_remote_entry")
+                    echo "entry_point=$entry_point" >> $GITHUB_OUTPUT
+                    echo "Found hashed remoteEntry.js: $hashed_remote_entry"
+                  fi
+            - name: Cache extracted package
+              uses: actions/cache/save@v5
+              with:
+                  path: ${{ steps.extract.outputs.extracted-folder }}
+                  key: extracted-applet-template-${{ needs.get-version-number.outputs.result }}
+
+    deploy-applet-template-to-cdn:
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment || 'regression' }}
+        needs: [get-version-number, prepare-package]
+        steps:
+            - name: Restore extracted package from cache
+              uses: actions/cache/restore@v5
+              with:
+                  path: ${{ needs.prepare-package.outputs.extracted-folder }}
+                  key: extracted-applet-template-${{ needs.get-version-number.outputs.result }}
+            - name: Deploy static files to CDN
+              uses: relativityone/rel-cdn-actions/actions/deploy-to-cdn@v2.2.0
+              with:
+                  environment: ${{ inputs.environment || 'regression' }}
+                  region: ${{ inputs.region || 'esus' }}
+                  client-id: ${{
+                      (inputs.environment == 'production' && secrets.CDN_PRODUCTION_CLIENT_ID) ||
+                      (inputs.environment == 'gov-reg' && secrets.CDN_GOVREG_CLIENT_ID) ||
+                      (inputs.environment == 'gov-prod' && secrets.CDN_GOVPROD_CLIENT_ID) ||
+                      secrets.CDN_CLIENT_ID }}
+                  entry-point: ${{ needs.prepare-package.outputs.entry-point || 'index.html' }}
+                  container: 'mfe-applet-template'
+                  content-source: ${{ needs.prepare-package.outputs.extracted-folder }}
+                  overwrite-files: ${{ inputs.overwrite-files || 'true' }} #controls whether files should be overwritten
+                  purge-cache: ${{ inputs.purge-cache || 'true' }} #controls whether cache should be purge
+                  releye-environment: ${{
+                      (inputs.environment == 'production' && 'commercial_prod') ||
+                      (inputs.environment == 'gov-reg' && 'government_reg') ||
+                      (inputs.environment == 'gov-prod' && 'government_prod') ||
+                      'commercial_reg' }}
+                  releye-token: ${{
+                      (inputs.environment == 'production' && secrets.R1_RELEYE_TOKEN_CICD_COMMERCIAL_PROD) ||
+                      (inputs.environment == 'gov-reg' && secrets.R1_RELEYE_TOKEN_CICD_GOVERNMENT_REG) ||
+                      (inputs.environment == 'gov-prod' && secrets.R1_RELEYE_TOKEN_CICD_GOVERNMENT_PROD) ||
+                      secrets.R1_RELEYE_TOKEN_CICD_COMMERCIAL_REG }}
+                  team-id: '${{ secrets.TEAM_ID }}'
+                  service-version: ${{ needs.get-version-number.outputs.result }}
+                  pull-request-url: ${{ format('https://github.com/relativityone/mfe-applet-template/releases/tag/{0}', needs.get-version-number.outputs.result) }}

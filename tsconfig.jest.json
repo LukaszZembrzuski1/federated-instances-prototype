@@ -1,0 +1,19 @@
+{
+	"extends": "./tsconfig.app.json",
+	"compilerOptions": {
+		"moduleResolution": "node",
+		"module": "commonjs",
+		"esModuleInterop": true,
+		"allowSyntheticDefaultImports": true,
+		"isolatedModules": true,
+		"types": ["jest", "node"],
+		"paths": {
+			"@/*": ["./src/*"]
+		},
+		"baseUrl": ".",
+		// Performance optimizations
+		"skipLibCheck": true,
+		"incremental": false
+	},
+	"include": ["src/**/*", "src/__tests__/**/*"]
+}

@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+    name: mfe-applet-template
+    description: "[DEPRECATED] No longer maintained. Use relativityone/mfe-framework for new micro-frontend applets in RelativityOne."
+    annotations:
+        github.com/project-slug: relativityone/mfe-applet-template
+        backstage.io/techdocs-ref: dir:.
+spec:
+    lifecycle: deprecated
+    owner: ptci-3634191
